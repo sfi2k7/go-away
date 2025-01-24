@@ -2,6 +2,7 @@ package goaway
 
 import (
 	"strings"
+	"time"
 	"unicode"
 
 	"golang.org/x/text/runes"
@@ -151,37 +152,59 @@ func (g *ProfanityDetector) indexToRune(s string, index int) int {
 	return count
 }
 
-func (g *ProfanityDetector) Censor(s string) string {
+type CensorResponse struct {
+	Took         int      `json:"took"`
+	Original     string   `json:"original"`
+	Redacted     string   `json:"text"`
+	HasProfanity bool     `json:"hasProfanity"`
+	Words        []string `json:"clientResult"`
+}
+
+func (g *ProfanityDetector) Censor(s string) *CensorResponse {
+	var censorresponse CensorResponse = CensorResponse{Original: s}
+	start := time.Now()
+
+	s = strings.ReplaceAll(s, " ass ", " *** ")
 	censored := []rune(s)
 	var originalIndexes []int
 	s, originalIndexes = g.sanitize(s, true)
 	runeWordLength := 0
 
-	g.checkProfanity(&s, &originalIndexes, &censored, g.falseNegatives, &runeWordLength)
+	words := g.checkProfanity(&s, &originalIndexes, &censored, g.falseNegatives, &runeWordLength)
 	g.removeFalsePositives(&s, &originalIndexes, &runeWordLength)
-	g.checkProfanity(&s, &originalIndexes, &censored, g.profanities, &runeWordLength)
+	words2 := g.checkProfanity(&s, &originalIndexes, &censored, g.profanities, &runeWordLength)
 
-	return string(censored)
+	words = append(words, words2...)
+	censorresponse.HasProfanity = len(words) > 0
+	censorresponse.Redacted = string(censored)
+	censorresponse.Words = words
+	censorresponse.Took = int(time.Since(start).Milliseconds())
+	return &censorresponse
 }
 
-func (g *ProfanityDetector) checkProfanity(s *string, originalIndexes *[]int, censored *[]rune, wordList []string, runeWordLength *int) {
+func (g *ProfanityDetector) checkProfanity(s *string, originalIndexes *[]int, censored *[]rune, wordList []string, runeWordLength *int) []string {
+	var words []string
 	for _, word := range wordList {
 		currentIndex := 0
 		*runeWordLength = len([]rune(word))
 		for currentIndex != -1 {
 			if foundIndex := strings.Index((*s)[currentIndex:], word); foundIndex != -1 {
+				var w string
 				for i := 0; i < *runeWordLength; i++ {
 					runeIndex := g.indexToRune(*s, currentIndex+foundIndex) + i
 					if runeIndex < len(*originalIndexes) {
+						w += string((*censored)[(*originalIndexes)[runeIndex]])
 						(*censored)[(*originalIndexes)[runeIndex]] = '*'
 					}
 				}
+				words = append(words, w)
 				currentIndex += foundIndex + len([]byte(word))
 			} else {
 				break
 			}
 		}
 	}
+	return words
 }
 
 func (g *ProfanityDetector) removeFalsePositives(s *string, originalIndexes *[]int, runeWordLength *int) {
@@ -324,7 +347,7 @@ func ExtractProfanity(s string) string {
 // Censor takes in a string (word or sentence) and tries to censor all profanities found.
 //
 // Uses the default ProfanityDetector
-func Censor(s string) string {
+func Censor(s string) *CensorResponse {
 	if defaultProfanityDetector == nil {
 		defaultProfanityDetector = NewProfanityDetector()
 	}
